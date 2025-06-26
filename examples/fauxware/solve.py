@@ -10,22 +10,18 @@ import random # Needed for picking a random seed and offset
 import logging
 logging.getLogger('angr').setLevel(logging.WARNING)
 
-def find_backdoor_via_file_input(initial_input_file: str = None, symbolic_bytes_count: int = 64):
+def perform_initial_concolic_exploration(initial_input_file: str = None, symbolic_bytes_count: int = 64):
     """
-    Demonstrates how to use Angr for concolic execution to find the 'SOSNEAKY' backdoor string
-    when it's expected to be found within the *content* of a file provided as a command-line argument.
+    Performs initial concolic execution using Angr on a binary, running until deadended states,
+    and reports the basic block execution history for the explored paths.
 
     This version supports:
     1. Symbolic input content based on an initial concrete input file (hybrid approach).
     2. Dynamically setting the symbolic file size based on the initial input file's length.
 
     NOTE: This script assumes the 'fauxware' binary (or a similar LAVA binary)
-    has been compiled from a C code where:
-    1. It takes a single command-line argument which is the path to an input file.
-    2. It reads the content of this input file.
-    3. The 'SOSNEAKY' backdoor is triggered if the *content of this file* matches "SOSNEAKY"
-       or leads to a state that prints "Welcome to the admin console, trusted user!".
-    (The original fauxware.c does not directly do this; its backdoor is via stdin 'password').
+    has been compiled from a C code that takes a single command-line argument which
+    is the path to an input file.
 
     Args:
         initial_input_file (str, optional): Path to a concrete file to use as the base
@@ -55,7 +51,7 @@ def find_backdoor_via_file_input(initial_input_file: str = None, symbolic_bytes_
         print(f"[*] Initial input file size: {actual_file_size} bytes.")
     else:
         print("[!] No valid initial input file provided. Falling back to a fully symbolic input.")
-        # Default size if no concrete input is provided. SOSNEAKY is 8 bytes.
+        # Default size if no concrete input is provided. A minimum size for useful exploration.
         actual_file_size = 64 
 
     # Determine the total size of the symbolic input.
@@ -116,87 +112,71 @@ def find_backdoor_via_file_input(initial_input_file: str = None, symbolic_bytes_
         args=[p.filename, SYMBOLIC_FILE_PATH],
         fs={SYMBOLIC_FILE_PATH: symbolic_sim_file},
         # You can add Angr options here for performance, e.g.:
-        # pylgr_options={angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY}
+        pylgr_options={angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY}
+        # The user assumes initial inputs are OK and won't crash, so no special options needed here
     )
 
     # Initialize the SimulationManager with our state
     sm = p.factory.simulation_manager(state)
 
-    print(f"[*] Starting symbolic execution to find backdoor via file input...")
+    print(f"[*] Starting symbolic execution until deadended states...")
 
-    # Define the find condition:
-    # We want to find a state where the backdoor's success message appears in stdout.
-    # The modified fauxware.c prints "Welcome to the admin console, trusted user! (via file backdoor)\n"
-    # when the backdoor is triggered.
-    find_condition = lambda s: b'Welcome to the admin console, trusted user!' in s.posix.dumps(1) # Check stdout (fd 1)
+    # Run the simulation manager until all active paths are exhausted (reach deadended states).
+    sm.run()
 
-    # Explore until a state satisfying the find_condition is found.
-    sm.explore(find=find_condition)
+    print(f"\n[*] Initial exploration complete. {len(sm.deadended)} deadended states found.")
+    
+    total_basic_blocks_covered = set()
 
-    # Check if any states were found that meet our condition
-    if sm.found:
-        print(f"\n[+] Found {len(sm.found)} state(s) where the backdoor message was detected in output!")
+    # Iterate through all deadended states and print their execution history
+    for i, deadended_state in enumerate(sm.deadended):
+        print(f"\n--- Path {i+1} ---")
+        print(f"    Path terminated at address: {hex(deadended_state.addr)}")
+        print(f"    Path History (Basic Block Addresses):")
         
-        # Take the first found state
-        found_state = sm.found[0]
-        
-        # Concretize the content of the symbolic file
+        path_concrete_input = b''
         try:
-            # Evaluate the full symbolic_file_content based on the found_state's constraints
-            concrete_input = found_state.solver.eval(symbolic_file_content, cast_to=bytes)
-            # Trim null bytes from the end if they are just padding for the symbolic part
-            # Be careful with rstrip if actual nulls are meaningful data in your format.
-            # For this example, it's generally safe.
-            concrete_input = concrete_input.rstrip(b'\x00') 
-
-            print(f"[*] Concretized input file content that triggers the backdoor: '{concrete_input}'")
-            print(f"    (Hex: {concrete_input.hex()})")
-
-            # Verify that SOSNEAKY is indeed in the concrete input, if applicable to your backdoor trigger
-            # The backdoor in fauxware.c checks for "SOSNEAKY" directly in the input file content.
-            if b'SOSNEAKY' in concrete_input:
-                print("[+] 'SOSNEAKY' successfully found within the generated input bytes!")
-            else:
-                # This message indicates that while the backdoor was triggered (because "Welcome..." was printed),
-                # the *exact string* "SOSNEAKY" wasn't directly present in the concretized input.
-                # This could happen if the program transforms the input, or the trigger is more complex
-                # than a direct string match (e.g., hash comparison, mathematical condition).
-                # For our modified fauxware, it *should* contain SOSNEAKY.
-                print("[-] 'SOSNEAKY' was not directly found in the generated input file content. This is unexpected for modified fauxware.")
-                print("    Please verify that the generated input makes the strcmp('SOSNEAKY', input) return 0.")
-                # For debug: print the full output of the state
-                # print("Full stdout of found state:\n", found_state.posix.dumps(1))
-
-            return concrete_input
-
+            # Concretize the input that led to this specific deadended state
+            path_concrete_input = deadended_state.solver.eval(symbolic_file_content, cast_to=bytes)
+            path_concrete_input = path_concrete_input.rstrip(b'\x00')
+            print(f"    Input that led to this path: '{path_concrete_input}' (Hex: {path_concrete_input.hex()})")
         except Exception as e:
-            print(f"[-] Error concretizing input: {e}")
-            return None
-    else:
-        print("[-] No state found that prints the backdoor success message to stdout. The backdoor may not have been triggered by file content.")
-        return None
+            print(f"    Could not concretize input for this path: {e}")
 
-def test():
-    # To run this test, you'd need a 'test_input.txt' and a modified 'fauxware'
-    # that reads the file content for the backdoor check.
-    # For instance, create a 'test_input.txt' file with some content.
-    test_file_path = "test_input.txt" 
-    with open(test_file_path, "w") as f:
-        f.write("A short test string here.")
+        for addr in deadended_state.history.bbl_addrs:
+            total_basic_blocks_covered.add(addr) # Track overall coverage
+            line_info_str = ""
+            try:
+                # This will show source file, line number, and function if compiled with -g
+                line_info = p.loader.find_line_by_addr(addr)
+                if line_info:
+                    # Format as 'file:line (function)'
+                    line_info_str = f" ({os.path.basename(line_info.file)}:{line_info.line} in {line_info.function})"
+            except Exception:
+                pass # Ignore if line info not found (e.g., in library code or no debug info)
+            print(f"        - {hex(addr)}{line_info_str}")
 
-    r = find_backdoor_via_file_input(initial_input_file=test_file_path, symbolic_bytes_count=8)
+        # Check if the backdoor message was printed in this specific path's stdout
+        path_stdout = deadended_state.posix.dumps(1)
+        if b'Welcome to the admin console, trusted user!' in path_stdout:
+            print(f"    [+] Backdoor success message detected in stdout for this path!")
+        elif b'Go away!' in path_stdout:
+            print(f"    [-] 'Go away!' (rejected) message detected in stdout for this path.")
+        else:
+            print(f"    [?] No specific backdoor/rejected message detected in stdout for this path.")
+        
+        # You can add more checks here, e.g., if deadended_state.errored: print error details
+
+    print(f"\n[*] Total unique basic blocks covered across all paths: {len(total_basic_blocks_covered)}")
+    print(f"[*] Raw deadended states: {sm.deadended}") # For debugging/inspection if needed
     
-    # This assertion will only pass if your 'fauxware' (or a new binary) is
-    # compiled to read the file and the backdoor is triggered by 'SOSNEAKY'
-    # within that file, AND Angr correctly finds it.
-    assert r is not None and b'SOSNEAKY' in r
-    
-    # Clean up test file
-    os.remove(test_file_path)
+    # Return the simulation manager so we can continue exploration in the next step
+    return sm, symbolic_file_content, p
+
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description="Find backdoor via symbolic file input.")
+    parser = argparse.ArgumentParser(description="Perform initial concolic exploration and report path history.")
     parser.add_argument("--input-file", "-i", type=str, 
                         help="Path to an initial concrete input file to base symbolic input on.")
     parser.add_argument("--symbolic-bytes", "-s", type=int, default=64,
@@ -215,21 +195,20 @@ if __name__ == '__main__':
             f.write(b"A" * 32) # Write some dummy content
         print(f"[*] Created a dummy input file: {dummy_input_path}")
 
-    result_input = find_backdoor_via_file_input(
+    # Call the main exploration function
+    # We now return the simgr, symbolic_file_content, and project for potential future steps
+    simgr_result, symbolic_content_var, project_obj = perform_initial_concolic_exploration(
         initial_input_file=input_file_to_use,
         symbolic_bytes_count=args.symbolic_bytes
     )
     
-    if result_input:
-        output_filename = "backdoor_file_input.bin"
-        with open(output_filename, "wb") as f:
-            f.write(result_input)
-        print(f"\nSuccessfully generated and saved input to: {output_filename}")
-        print("To test this input (assuming a modified fauxware that takes a file arg):")
-        print(f"Run with: ./fauxware {output_filename}")
-    else:
-        print("\nFailed to find backdoor input.")
+    # Example of how you might continue from here in a future step:
+    # If you want to find a backdoor *after* the initial run:
+    # find_condition = lambda s: b'Welcome to the admin console, trusted user!' in s.posix.dumps(1)
+    # simgr_result.explore(find=find_condition)
+    # ... then process simgr_result.found as before
 
     # Clean up the dummy file if it was created during this run
     if create_dummy_file and os.path.exists(dummy_input_path):
         os.remove(dummy_input_path)
+
