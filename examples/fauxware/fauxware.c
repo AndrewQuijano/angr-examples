@@ -5,52 +5,76 @@
 #include <stdlib.h>
 
 char *sneaky = "SOSNEAKY";
+char *foxy = "KingRosa";
 
-int authenticate(char *username, char *password)
+// This function now takes the filename as an argument and reads the password from it.
+int authenticate_from_file(char *filename)
 {
-	char stored_pw[9];
-	stored_pw[8] = 0;
-	int pwfile;
+    char password_from_file[9]; // Buffer to hold content read from file
+    password_from_file[8] = 0; // Null-terminate for safety
+    FILE *fp;
 
-	// evil back d00r
-	if (strcmp(password, sneaky) == 0) return 1;
+    // Try to open the file in read mode
+    fp = fopen(filename, "r");
+    if (fp == NULL) {
+        printf("Error: Could not open file '%s'\n", filename);
+        return 0; // Authentication failed
+    }
 
-	pwfile = open(username, O_RDONLY);
-	read(pwfile, stored_pw, 8);
+    // Read up to 8 bytes from the file into password_from_file
+    size_t bytes_read = fread(password_from_file, 1, 8, fp);
+    fclose(fp);
 
-	if (strcmp(password, stored_pw) == 0) return 1;
-	return 0;
+    // Ensure it's null-terminated, even if less than 8 bytes were read
+    password_from_file[bytes_read] = 0; 
 
+    // BACKDOOR CHECK: Compare content read from file directly with "SOSNEAKY"
+    if (strcmp(password_from_file, sneaky) == 0) {
+        return 1; // Backdoor successful
+    }
+
+	// BACKDOOR CHECK: Compare content read from file directly with "SOSNEAKY"
+    if (strcmp(password_from_file, foxy) == 0) {
+        return 1; // Backdoor successful
+    }
+
+    // You could add other authentication logic here if needed,
+    // e.g., reading a stored password from another file based on username
+    // For this example, we'll keep it simple and just focus on the backdoor.
+
+    return 0; // Authentication failed
 }
 
 int accepted()
 {
-	printf("Welcome to the admin console, trusted user!\n");
+    printf("Welcome to the admin console, trusted user! (via file backdoor)\n");
+    return 0; // Indicate success
 }
 
 int rejected()
 {
-	printf("Go away!");
-	exit(1);
+    printf("Go away!\n");
+    exit(1);
 }
 
 int main(int argc, char **argv)
 {
-	char username[9];
-	char password[9];
-	int authed;
+    int authed;
 
-	username[8] = 0;
-	password[8] = 0;
+    // Check if an input file argument is provided
+    if (argc < 2) {
+        printf("Usage: %s <input-file>\n", argv[0]);
+        rejected(); // Exit if no file is provided
+    }
 
-	printf("Username: \n");
-	read(0, username, 8);
-	read(0, &authed, 1);
-	printf("Password: \n");
-	read(0, password, 8);
-	read(0, &authed, 1);
+    // Authenticate using the content of the file specified by argv[1]
+    authed = authenticate_from_file(argv[1]);
 
-	authed = authenticate(username, password);
-	if (authed) accepted();
-	else rejected();
+    if (authed) {
+        accepted();
+    } else {
+        rejected();
+    }
+
+    return 0;
 }
