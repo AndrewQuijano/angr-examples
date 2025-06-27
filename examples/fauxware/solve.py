@@ -10,6 +10,56 @@ import random # Needed for picking a random seed and offset
 import logging
 logging.getLogger('angr').setLevel(logging.WARNING)
 
+
+def retrive_all_basic_blocks(binary_path: str):
+    """
+    Retrieve all basic blocks in the program (using the binary loader or CFG)
+    """
+    all_basic_blocks = set()
+    try:
+        # Create a new project with auto_load_libs disabled
+        p = angr.Project(binary_path, auto_load_libs=False)
+        cfg = p.analyses.CFGFast()
+        for node in cfg.nodes():
+            all_basic_blocks.add(node.addr)
+    except Exception as e:
+        print(f"[!] Could not retrieve all basic blocks: {e}")
+    return all_basic_blocks
+
+
+def calculate_code_coverage(covered_blocks: set, total_blocks: set) -> float:
+    if len(covered_blocks) == 0:
+        print("[!] Warning: Covered Blocks is empty.")
+        return 0.0
+    
+    # Sanity check: Ensure covered_blocks is a subset of total_blocks
+    if not covered_blocks.issubset(total_blocks):
+        print("[!] Warning: Some covered blocks are not in the total blocks set.")
+        uncovered_blocks = covered_blocks - total_blocks
+        print(f"[!] Uncovered blocks: {uncovered_blocks}")
+
+    # Calculate coverage percentage
+    coverage_percentage = (len(covered_blocks) / len(total_blocks)) * 100
+    print(f"\n[*] Code Coverage: {coverage_percentage:.2f}%")
+    print(f"[*] Total Basic Blocks: {len(total_blocks)}")
+    print(f"[*] Covered Basic Blocks: {len(covered_blocks)}")
+    return coverage_percentage
+
+
+def filter_main_binary_blocks(project: angr.project, blocks: angr.state_plugins.history.LambdaIterIter) -> set:
+    """
+    Filter blocks to include only those from the main binary.
+    Also, converts to a set for code coverage calculation.
+    """
+    main_binary = project.loader.main_object
+    main_binary_start = main_binary.min_addr
+    main_binary_end = main_binary.max_addr
+
+    # Filter blocks within the main binary's address range
+    filtered_blocks = {addr for addr in blocks if main_binary_start <= addr <= main_binary_end}
+    return filtered_blocks
+
+
 def perform_initial_concolic_exploration(initial_input_file: str = None, symbolic_bytes_count: int = 64):
     """
     Performs initial concolic execution using Angr on a binary, running until deadended states,
@@ -33,15 +83,14 @@ def perform_initial_concolic_exploration(initial_input_file: str = None, symboli
 
     # Load the binary.
     # auto_load_libs=True ensures Angr's SimProcedures for library functions (like fopen, fread) are used.
-    p = angr.Project('fauxware', auto_load_libs=True)
+    p = angr.Project('fauxware', auto_load_libs=True, load_debug_info=True)
+    all_blocks = retrive_all_basic_blocks('fauxware')
 
     # Define the path for the symbolic input file within the simulated filesystem
     SYMBOLIC_FILE_PATH = '/tmp/input.txt'
     
     concrete_seed_content = b''
     actual_file_size = 0
-
-    input_file_provided_by_user = (initial_input_file is not None)
 
     if initial_input_file and os.path.exists(initial_input_file):
         print(f"[*] Reading initial concrete input from: {initial_input_file}")
@@ -159,20 +208,33 @@ def perform_initial_concolic_exploration(initial_input_file: str = None, symboli
             with open(file_path, "wb") as f:
                 f.write(path_concrete_input)
             print(f"    Concretized input saved to: {file_path}")
+            calculate_code_coverage(
+                covered_blocks=filter_main_binary_blocks(p, deadended_state.history.bbl_addrs),
+                total_blocks=all_blocks
+            )
             
         except Exception as e:
             print(f"    Could not concretize input for this path: {e}")
 
-        for addr in deadended_state.history.bbl_addrs:
+        for addr in filter_main_binary_blocks(p, deadended_state.history.bbl_addrs):
             total_basic_blocks_covered.add(addr) # Track overall coverage
             line_info_str = ""
             try:
+                line_info_str = ""
                 # This will show source file, line number, and function if compiled with -g
-                line_info = p.loader.find_line_by_addr(addr)
+                # print(p.loader.main_object.addr_to_line)
+                # print(type(p.loader.main_object.addr_to_line))
+                line_info = p.loader.main_object.addr_to_line[addr]
                 if line_info:
-                    # Format as 'file:line (function)'
-                    line_info_str = f" ({os.path.basename(line_info.file)}:{line_info.line} in {line_info.function})"
-            except Exception:
+                    file_path, line_num = next(iter(line_info))
+                    # Format the line info string
+                    if file_path and line_num:
+                        line_info_str = f" ({os.path.basename(file_path)}:{line_num}"
+            except KeyError:
+                # print("Yeah seems like can't find addr")
+                pass
+            except Exception as e:
+                print(f"[!] Exception occurred while retrieving line info: {e}")
                 pass # Ignore if line info not found (e.g., in library code or no debug info)
             print(f"        - {hex(addr)}{line_info_str}")
 
@@ -187,7 +249,11 @@ def perform_initial_concolic_exploration(initial_input_file: str = None, symboli
         
         # You can add more checks here, e.g., if deadended_state.errored: print error details
 
-    print(f"\n[*] Total unique basic blocks covered across all paths: {len(total_basic_blocks_covered)}")
+    print(f"\n[*] Total unique basic blocks covered across all paths: {len(filter_main_binary_blocks(p, total_basic_blocks_covered))}")
+    print(f"\n[*] Final coverage:",  calculate_code_coverage(
+                covered_blocks=filter_main_binary_blocks(p, total_basic_blocks_covered),
+                total_blocks=all_blocks
+            ))
     print(f"[*] Raw deadended states: {sm.deadended}") # For debugging/inspection if needed
     
     # Return the simulation manager so we can continue exploration in the next step
