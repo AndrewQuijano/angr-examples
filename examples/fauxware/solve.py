@@ -119,6 +119,13 @@ def perform_initial_concolic_exploration(initial_input_file: str = None, symboli
     # Initialize the SimulationManager with our state
     sm = p.factory.simulation_manager(state)
 
+    #custom_tech = LAVAPrioritizingTechnique(
+    #    project=p,
+    #    priority_targets=target_addrs, # Add addresses of the deeply nested branch
+    #    magic_values=magic_strings
+    #)
+    # sm.use_technique(custom_tech)
+
     print(f"[*] Starting symbolic execution until deadended states...")
 
     # Run the simulation manager until all active paths are exhausted (reach deadended states).
@@ -138,8 +145,21 @@ def perform_initial_concolic_exploration(initial_input_file: str = None, symboli
         try:
             # Concretize the input that led to this specific deadended state
             path_concrete_input = deadended_state.solver.eval(symbolic_file_content, cast_to=bytes)
-            path_concrete_input = path_concrete_input.rstrip(b'\x00')
             print(f"    Input that led to this path: '{path_concrete_input}' (Hex: {path_concrete_input.hex()})")
+            
+            # Save the concretized input to a file
+            output_dir = "concretized_inputs"
+            os.makedirs(output_dir, exist_ok=True)  # Ensure the output directory exists
+
+            # Generate a unique filename
+            file_name = f"input_path{i+1}_{deadended_state.addr}.bin"  # Use the state's address or another unique identifier
+            file_path = os.path.join(output_dir, file_name)
+
+            # Write the concretized input to the file
+            with open(file_path, "wb") as f:
+                f.write(path_concrete_input)
+            print(f"    Concretized input saved to: {file_path}")
+            
         except Exception as e:
             print(f"    Could not concretize input for this path: {e}")
 
