@@ -225,13 +225,19 @@ def perform_initial_concolic_exploration(initial_input_file: str = None, symboli
                 # print(p.loader.main_object.addr_to_line)
                 # print(type(p.loader.main_object.addr_to_line))
                 line_info = p.loader.main_object.addr_to_line[addr]
+                #print("Show main_object", p.loader.main_object)
+                #print("type", type(p.loader.main_object))
+                #print("Available methods and attributes in main_object:")
+                #for item in dir(p.loader.main_object):
+                #    print(item)
+                #print("SEction map, look for debug", p.loader.main_object.sections_map)
+
                 if line_info:
                     file_path, line_num = next(iter(line_info))
                     # Format the line info string
                     if file_path and line_num:
                         line_info_str = f" ({os.path.basename(file_path)}:{line_num}"
             except KeyError:
-                # print("Yeah seems like can't find addr")
                 pass
             except Exception as e:
                 print(f"[!] Exception occurred while retrieving line info: {e}")
